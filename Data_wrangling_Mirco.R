@@ -3,6 +3,7 @@ library(tidyverse)
 library(ggplot2)
 library(ggcorrplot)
 library(caret)
+library(fastDummies)
 
 
 training <- read_csv("Data/training.csv")
@@ -34,7 +35,7 @@ training %>% select(GDENAMK,GDENR,KTKZ,area,balcony,cabletv,date,elevator,floors
 training_s_1 %>% mutate(KTKZ = as.factor(KTKZ)) %>% 
   mutate_at(c("balcony","cabletv","elevator","kids_friendly",
               "parking_indoor","parking_outside"), as.logical) %>%
-  mutate_at(c("GDENAMK","year_built","floors"), as.factor) %>% 
+  mutate_at(c("GDENR","year_built","floors"), as.factor) %>% 
   mutate(date = as.Date(date, format ="%d.%m.%Y")) -> training_s_1
 
 
@@ -83,4 +84,19 @@ summary(lm_1)
 
 #Create new dataset, this time containing factors too:
 
-training_s_1 %>% 
+training_s_1 %>% select(rent_full, msregion, Micro_rating_Accessibility, Micro_rating_DistrictAndArea,
+                        Micro_rating_SunAndView, apoth_pix_count_km2, dist_to_4G, dist_to_highway, dist_to_train_stat,
+                        restaur_pix_count_km2, superm_pix_count_km2, dist_to_river, which(sapply(.,class)=="factor")) -> training_comb
+  
+#Transforming the factors into dummy variables, because we can't use them as "levels" -> Floor 2 ist not 1 better than floor 1
+training_dummy <- dummy_cols(training_comb)
+
+#Deleting the reimainders
+training_dummy %>% select(!c(GDENR,year_built,floors,KTKZ)) -> training_dummy_short
+
+#This creates an overkill of a regression model. Probably not usable ....
+lm_full <- lm(data=training_dummy_short, rent_full ~.)
+summary(lm_full)
+
+data.frame(summary(score)$coef[summary(score)$coef[,4] <= .05, 4])
+  
