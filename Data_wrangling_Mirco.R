@@ -28,7 +28,7 @@ training %>% select(GDENAMK,GDENR,KTKZ,area,balcony,cabletv,date,elevator,floors
                     Micro_rating_SunAndView,Micro_rating_ServicesAndNature,wgh_avg_sonnenklasse_per_egid,Anteil_auslaend,
                     Avg_age,Avg_size_household,Noise_max,anteil_efh,apoth_pix_count_km2,avg_anzhl_geschosse,dist_to_4G,
                     dist_to_haltst,dist_to_highway,dist_to_lake,dist_to_main_stat,dist_to_school_1,dist_to_train_stat,
-                    geb_wohnnutz_total,restaur_pix_count_km2,superm_pix_count_km2,dist_to_river) -> training_s_1
+                    geb_wohnnutz_total,restaur_pix_count_km2,wgh_avg_sonnenklasse_per_egid_1, superm_pix_count_km2,dist_to_river) -> training_s_1
 
 #The first seleciton condensed the data frame from 100 to 44 variables. We still need to mutate some of them.
 
@@ -74,7 +74,8 @@ minMax_num <- predict(preprocess_num,training_short )
 summary(minMax_num)
 
 short_corr_minmax <- cor(minMax_num)
-ggcorrplot(short_corr_minmax,hc.order = TRUE, type="upper", lab = TRUE)
+ggcorrplot(short_corr_minmax,hc.order = TRUE, lab = TRUE)
+
 
 #Did not change that much, but I think it is better to work with normalized data.
 
@@ -98,5 +99,5 @@ training_dummy %>% select(!c(GDENR,year_built,floors,KTKZ)) -> training_dummy_sh
 lm_full <- lm(data=training_dummy_short, rent_full ~.)
 summary(lm_full)
 
-data.frame(summary(score)$coef[summary(score)$coef[,4] <= .05, 4])
+data.frame(summary(lm_full)$coef[summary(lm_full)$coef[,4] <= .05, 4])
   

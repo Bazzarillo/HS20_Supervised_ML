@@ -1,0 +1,251 @@
+---
+title: "Exploration and Comments"
+author: "Mirco Bazzani,Krupicz Greta"
+date: "11/30/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+library(tidyverse)
+library(ggplot2)
+library(gridExtra)
+library(ggcorrplot)
+library(caret)
+library(fastDummies)
+library(kableExtra)
+
+training <- read_csv("Data/training.csv")
+
+```
+
+
+## Initial exploration
+
+What we want to achieve is to gain an approximate regression on housing prices using descriptiv metrics of individual flats such as room numbers, floors and additional metrics based on location.
+
+The dataset we are goint to use consists of 100 variables and 90'000 rows.
+
+
+```{r summary full dataset, include=FALSE}
+summary(training)
+
+```
+
+
+The dataset is way to extensive. We wil therefore kick out all Variables with a large amount of missing values.
+
+
+```{r}
+
+training %>% mutate_at(c("KTKZ", "GDENR", "floors", "quarter_general"), as.factor) %>% 
+  mutate_at(c("balcony","cabletv","elevator","kids_friendly",
+              "parking_indoor","parking_outside"), as.logical) %>%
+  mutate(year_built = as.numeric(year_built)) %>% 
+  replace_na(list(balcony = FALSE, 
+                  cabletv = FALSE,
+                  elevator= FALSE,
+                  kids_friendly= FALSE,
+                  parking_indoor= FALSE,
+                  parking_outside= FALSE)) %>% 
+  mutate(date = as.Date(date, format ="%d.%m.%Y")) -> training
+
+training %>% select(rent_full,
+                    GDENR, #If we want to match our dataset with external data
+                    KTKZ, #Could be interesting, as flat prices vary per canton
+                    area, 
+                    balcony, #Small amount of missing values
+                    cabletv, #Small amount of missing values
+                    elevator,
+                    floors,
+                    msregion, #Not clear what this means
+                    parking_indoor,
+                    parking_outside,
+                    quarter_general,
+                    rooms,
+                    year_built,
+                    Micro_rating,
+                    Micro_rating_NoiseAndEmission,
+                    Micro_rating_Accessibility,
+                    Micro_rating_DistrictAndArea,
+                    Micro_rating_SunAndView,
+                    Micro_rating_ServicesAndNature,
+                    wgh_avg_sonnenklasse_per_egid,
+                    Anteil_auslaend,
+                    Avg_age,
+                    Avg_size_household,
+                    Noise_max,
+                    anteil_efh,
+                    apoth_pix_count_km2,
+                    avg_anzhl_geschosse,
+                    dist_to_4G,
+                    dist_to_haltst,
+                    dist_to_highway,
+                    dist_to_lake,
+                    dist_to_main_stat,
+                    dist_to_school_1,
+                    dist_to_train_stat,
+                    geb_wohnnutz_total,
+                    dist_to_river,
+                    restaur_pix_count_km2, 
+                    superm_pix_count_km2) -> training_reduced_large
+
+training %>% select(rent_full, #If we want to match our dataset with external data
+                    GDENR, #If we want to match our dataset with external data
+                    KTKZ, #Could be interesting, as flat prices vary per canton
+                    area, 
+                    balcony, #Small amount of missing values
+                    cabletv, #Small amount of missing values
+                    elevator,
+                    floors,
+                    msregion, #Not clear what this means
+                    parking_indoor,
+                    parking_outside,
+                    quarter_general,
+                    rooms,
+                    year_built,
+                    Micro_rating,
+                    Micro_rating_NoiseAndEmission,
+                    Micro_rating_Accessibility,
+                    Micro_rating_DistrictAndArea,
+                    Micro_rating_SunAndView,
+                    Micro_rating_ServicesAndNature
+                    ) -> training_microrating
+
+training %>% select(rent_full,
+                    GDENR, #If we want to match our dataset with external data
+                    KTKZ, #Could be interesting, as flat prices vary per canton
+                    area, 
+                    balcony, #Small amount of missing values
+                    cabletv, #Small amount of missing values
+                    elevator,
+                    floors,
+                    msregion, #Not clear what this means
+                    parking_indoor,
+                    parking_outside,
+                    quarter_general,
+                    rooms,
+                    year_built,
+                    Anteil_auslaend,
+                    Avg_age,
+                    Avg_size_household,
+                    Noise_max,
+                    anteil_efh,
+                    apoth_pix_count_km2,
+                    avg_anzhl_geschosse,
+                    dist_to_4G,
+                    dist_to_haltst,
+                    dist_to_highway,
+                    dist_to_lake,
+                    dist_to_main_stat,
+                    dist_to_school_1,
+                    dist_to_train_stat,
+                    geb_wohnnutz_total,
+                    dist_to_river,
+                    restaur_pix_count_km2, 
+                    superm_pix_count_km2) -> training_no_microrating
+
+```
+
+
+This left us with 3 datasets.
+
+* One includes both micro ratings and descriptive variables about the surrounding area. k = 39 variables.
+* One only contains the micro ratings and data about the flat. k = 20 variables.
+* One without the micro ratings in order to surpass possible covariance.
+
+
+```{r}
+
+training_reduced_large %>%
+  keep(is.numeric) %>% 
+  gather() %>% 
+  ggplot(aes(value)) +
+    facet_wrap(~ key, scales = "free") +
+    geom_histogram()
+
+training_reduced_large %>% select(dist_to_haltst) %>% 
+  mutate(dist_to_haltst = log(dist_to_haltst)) %>% 
+  ggplot(aes(dist_to_haltst)) +
+  geom_histogram() +
+  labs(title = "Log-transformation of distance to the next bus stop")
+
+training_reduced_large %>% 
+  keep(is.factor) -> factors
+  
+factors %>% ggplot(aes(KTKZ)) +
+  geom_bar() + 
+  labs(title = "Count per canton") -> p1
+
+factors %>% ggplot(aes(floors)) +
+  geom_bar() +
+  labs(title = "Count per floor") -> p2
+
+factors %>% ggplot(aes(quarter_general)) +
+  geom_bar() +
+  labs(title = "Count of quarter Index")  -> p3
+
+grid.arrange(p1,p2,p3, nrow = 2)
+```
+
+The **micro-ratings** follow an approximate normal distribution, and are therefore ok. We could use them as regressors without any hassle.
+
+But most of the numeric values are right skewed, this includes:
+* area
+* anteil_efh
+* apoth_pix_count_km2
+* restaur_pix_count_km2
+* avg_anzhl_geschosse
+* avg_size_household
+* dist_to_4G
+* dist_to_haltst
+* dist_to_highway
+* dist_to_lake
+* dist_to_main_stat
+* dist_to_river
+* dist_to_school_1
+* dist_to_train_stat
+* geb_wohnnutz_total
+
+A log-transformation could come in handy on order to improve the regression model.
+
+Note: The dependent variable is skewed as well, but if we log this one too the interpretability of our model decreases, so I'm not sure if it would be a good idea.
+
+Furthermore: the log-regression makes sense for the linear model, but I do not know if we should do that for the other aproaches as well.
+
+```{r log transformation}
+training_no_microrating %>% 
+  mutate(across(c("area",
+                  "avg_anzhl_geschosse", 
+                  "Avg_size_household", 
+                  "dist_to_haltst",
+                  "dist_to_highway",
+                  "dist_to_lake",
+                  "dist_to_main_stat",
+                  "dist_to_river",
+                  "dist_to_school_1",
+                  "dist_to_train_stat",
+                  "geb_wohnnutz_total"), 
+                log)) -> training_no_mr_log
+
+training_no_mr_log %>%
+  keep(is.numeric) %>% 
+  gather() %>% 
+  ggplot(aes(value)) +
+    facet_wrap(~ key, scales = "free") +
+    geom_histogram()
+
+```
+
+```{r}
+summary(training_no_mr_log)
+training_no_mr_log %>% select(!GDENR) -> tr_no_mr_log
+lm_log <- lm(data = tr_no_mr_log, rent_full ~ .)
+summary(lm_log)
+plot(lm_log)
+data.frame(summary(lm_log)$coef[summary(lm_log)$coef[,4] <= .05, 4])
+```
+
+
