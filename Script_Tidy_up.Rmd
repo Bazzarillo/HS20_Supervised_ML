@@ -218,7 +218,6 @@ Furthermore: the log-regression makes sense for the linear model, but I do not k
 ```{r log transformation}
 training_no_microrating %>% 
   mutate(across(c("area",
-                  "avg_anzhl_geschosse", 
                   "Avg_size_household", 
                   "dist_to_haltst",
                   "dist_to_highway",
@@ -226,8 +225,7 @@ training_no_microrating %>%
                   "dist_to_main_stat",
                   "dist_to_river",
                   "dist_to_school_1",
-                  "dist_to_train_stat",
-                  "geb_wohnnutz_total"), 
+                  "dist_to_train_stat"), 
                 log)) -> training_no_mr_log
 
 training_no_mr_log %>%
@@ -239,13 +237,89 @@ training_no_mr_log %>%
 
 ```
 
-```{r}
+
+### Linear Model
+
+```{r No logged values}
+training_no_microrating %>% select(!GDENR) -> tr_mr
+
+lm_norm <- lm_log <- lm(data = tr_mr, rent_full ~ .)
+lm_norm
+summary(lm_norm)
+plot(lm_norm)
+```
+
+If none of the values are logged, we get an $R^2$ of .703. This is already pretty good.
+
+What happens if we log the rent:
+
+```{r R Dependent is logged}
+
+lm_log_dep <- lm_log <- lm(data = tr_mr, log(rent_full) ~ .)
+summary(lm_log_dep)
+plot(lm_log_dep)
+
+```
+This leaves us with an increase of $R^2$ by 3%
+
+As a last experiment I want to log both the dependent and the independent values:
+
+```{r Linear Log Model - both sides logged}
 summary(training_no_mr_log)
 training_no_mr_log %>% select(!GDENR) -> tr_no_mr_log
-lm_log <- lm(data = tr_no_mr_log, rent_full ~ .)
+lm_log <- lm(data = tr_no_mr_log, log(rent_full) ~ .)
 summary(lm_log)
 plot(lm_log)
 data.frame(summary(lm_log)$coef[summary(lm_log)$coef[,4] <= .05, 4])
+
 ```
 
+This increases the model accuracy even further. Lets try predictions with both of the logged models.
+
+What we can say for all of the 3 fitted models is that they are really bad at predicting both very low and really high values. I'll therefore try to delete the values that have the highest leverage on the model and see if it results in an increase of prediction quality:
+
+```{r}
+
+tr_mr = tr_mr[-c(13081,88785,69663),]
+lm_log_dep_corr <- lm_log <- lm(data = tr_mr, log(rent_full) ~ .)
+summary(lm_log_dep_corr)
+plot(lm_log_dep_corr)
+```
+
+Indeed, our model fit increased by 1%.
+
+
+Let's bootstrap our model:
+
+```{r}
+library(boot)
+
+bootReg <- function(formula, data, index){
+  d <- data[index,]
+  fit <- lm(formula, data = d)
+  return(coef(fit))
+}
+
+subset_test <- tail(tr_mr, 300)
+subset_train <- head(tr_mr, nrow(tr_mr)-300)
+
+bootResults <- boot(statistic = bootReg, formula = log(rent_full) ~ . , data = tr_mr, R = 1000)
+
+boot.ci(bootResults, type = "bca")
+
+```
+
+
+```{r}
+subset_train %>% select(!c(floors)) -> testset
+library(fastDummies)
+summary(subset_train)
+dummy_train <- dummy_columns(testset)
+summary(dummy_train)
+dummy_train[is.na(dummy_train)] <- 0
+
+summary(lm(data = dummy_train, log(rent_full) ~ .))
+
+
+```
 
