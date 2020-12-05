@@ -193,21 +193,15 @@ grid.arrange(p1,p2,p3, nrow = 2)
 The **micro-ratings** follow an approximate normal distribution, and are therefore ok. We could use them as regressors without any hassle.
 
 But most of the numeric values are right skewed, this includes:
-* area
-* anteil_efh
-* apoth_pix_count_km2
-* restaur_pix_count_km2
-* avg_anzhl_geschosse
-* avg_size_household
-* dist_to_4G
-* dist_to_haltst
-* dist_to_highway
-* dist_to_lake
-* dist_to_main_stat
-* dist_to_river
-* dist_to_school_1
-* dist_to_train_stat
-* geb_wohnnutz_total
+area
+"Avg_size_household", 
+"dist_to_haltst",
+"dist_to_highway",
+"dist_to_lake",
+"dist_to_main_stat",
+"dist_to_river",
+"dist_to_school_1",
+"dist_to_train_stat"
 
 A log-transformation could come in handy on order to improve the regression model.
 
@@ -278,7 +272,7 @@ This increases the model accuracy even further. Lets try predictions with both o
 
 What we can say for all of the 3 fitted models is that they are really bad at predicting both very low and really high values. I'll therefore try to delete the values that have the highest leverage on the model and see if it results in an increase of prediction quality:
 
-```{r}
+```{r modell optimisation}
 
 tr_mr = tr_mr[-c(13081,88785,69663),]
 lm_log_dep_corr <- lm_log <- lm(data = tr_mr, log(rent_full) ~ .)
@@ -287,6 +281,161 @@ plot(lm_log_dep_corr)
 ```
 
 Indeed, our model fit increased by 1%.
+
+The next step is a prediction based on a 80% / 20% split. I'll use a logged dependent value, and kick out some of the categorical values. The reson for this being that we don't have the same factor distribution in test- and trainingset. This creates a problem, bacause we do not have the same cantons / floors as regressors and thus can't predict the outcome.
+
+We could surpass this by using dummy variables, but when I tried it, I only got non-significant values.
+
+```{r prediction_lm 1}
+split_size <- .8
+sample_size <- floor(split_size * nrow(tr_mr))
+set.seed(123)
+train_ind <- sample(seq_len(nrow(tr_mr)), size = sample_size)
+
+training <- tr_mr[train_ind,]
+test <- tr_mr[-train_ind,]
+
+trn <-  select(training, -c(KTKZ, floors))
+tst <- select(test, -c(KTKZ,floors))
+
+lm_fit <- lm(data = trn, formula = log(rent_full) ~ .)
+summary(lm_fit)
+
+tst$predict <- stats::predict(lm_fit, tst)
+
+tst %>% mutate(predictors = exp(predict)) -> tst
+
+tst <- tst[-7863,] #deleting outlier
+
+ggplot(tst, aes(rent_full, predictors)) +
+  geom_point()
+
+```
+
+We significantly lost prediction power, but it can be used as an approximate regression model.
+
+But I want to further improve on the model. That's why I am going to take another approach, and fit a Lassoo-Regression on the Dataset that contains *both* Micro Ratings and our standard regressor. I'll keep the rent_full value logged.
+
+Let's see where we land:
+
+NOTE: the first lassoo model only produces errors (if we accept a Stackoverflow-investigation due to an error in the C+ code). I'll use a second model
+
+```{r lassoo prep, eval=FALSE, include=FALSE}
+library(lasso2)
+
+training_reduced_large %>% select(!c(floors, GDENR, Micro_rating_ServicesAndNature)) -> baseset
+
+split_size <- .8
+sample_s <- floor(split_size * nrow(baseset))
+set.seed(123)
+train_index <- sample(seq_len(nrow(baseset)), size = sample_size)
+
+training_large <- baseset[train_index,]
+test_large <- baseset[-train_index,]
+
+lass_bas <- summary(l1ce(rent_full ~ ., data = select_if(training_large,is.numeric)))$coef
+lass_2 <- summary(l1ce(rent_full ~ ., data = select(training_large, c(rent_full,
+                                                              area,
+                                                              msregion,
+                                                              rooms,
+                                                              year_built,
+                                                              Micro_rating_Accessibility,
+                                                              Micro_rating_DistrictAndArea,
+                                                              Anteil_auslaend,
+                                                              apoth_pix_count_km2,
+                                                              avg_anzhl_geschosse,
+                                                              dist_to_4G,
+                                                              dist_to_lake,
+                                                              dist_to_river,
+                                                              restaur_pix_count_km2))))$coef
+
+lass_3 <- summary(l1ce(rent_full ~ ., data = select(training_large, c(rent_full,
+                                                              area,
+                                                              msregion,
+                                                              rooms,
+                                                              Micro_rating_DistrictAndArea,
+                                                              apoth_pix_count_km2,
+                                                              avg_anzhl_geschosse,
+                                                              dist_to_4G,
+                                                              dist_to_river,
+                                                              restaur_pix_count_km2))))$coef
+
+```
+
+Imputation of Values in order to deal with NAs:
+
+
+```{r}
+
+training_reduced_large %>% select(!c(GDENR)) -> baseset
+summary(baseset_2)
+print(levels(baseset$KTKZ))
+
+#Create a model that is computable by the new mode. It only works with integers
+baseset <- baseset %>% mutate_if(is.factor, as.integer) %>% mutate_if(is.logical, as.integer)
+summary(baseset)
+
+
+library(mice)
+#we first impute the missing values based on a multivariate imputation
+test_impute <- mice(baseset, seed = 123)
+
+test_impute$imp$floors 
+test_impute$imp$Anteil_auslaend 
+test_impute$imp$anteil_efh
+test_impute$imp$year_built
+test_impute$imp$avg_anzhl_geschosse
+
+complete_set <- complete(test_impute,1)
+summary(baseset)
+
+summary(lm(data = baseset, formula = rent_full ~.))
+
+summary(lm(data = complete_set, formula = rent_full ~.))
+
+summary(complete_set)
+
+#What we see is that an imputation works well for the aggreagte level - the coefficients (median, mean & quantile) stay the same, but the really loose
+#interpretability on a row by row-level.
+
+```
+Result: the overall fit of the model got worse!
+
+
+Try 2, now with lasso and ridge-comparison.
+
+```{r}
+no_na <- na.omit(baseset)
+
+#Splitting up X and Y variables
+X <- no_na %>% select(!c(rent_full))
+Y <- no_na %>% select(rent_full)
+
+#Normalizing data
+processed <- preProcess(X, method = c("center", "scale"))
+X <- predict(processed, X)
+
+
+index <- createDataPartition(Y$rent_full, p=0.75, list=FALSE)
+
+X_train <- X[ index, ]
+X_test <- X[-index, ]
+Y_train <- Y[index,]
+Y_test<-Y[-index,]
+
+lasso <- caret::train(x = X_train, 
+                      y = Y_train,
+                      method = "glmnet", 
+                      tuneGrid = expand.grid(alpha = 1, lambda = 1))
+
+lasso_test <- train(x = X_train[,2:37],
+                    y = X_train[,1],
+                    method = "glmnet", 
+                    tuneGrid = expand.grid(alpha = 1, lambda = 1))
+
+summary(X_train)
+```
+
 
 
 Let's bootstrap our model:
@@ -310,16 +459,4 @@ boot.ci(bootResults, type = "bca")
 ```
 
 
-```{r}
-subset_train %>% select(!c(floors)) -> testset
-library(fastDummies)
-summary(subset_train)
-dummy_train <- dummy_columns(testset)
-summary(dummy_train)
-dummy_train[is.na(dummy_train)] <- 0
-
-summary(lm(data = dummy_train, log(rent_full) ~ .))
-
-
-```
 
