@@ -1,6 +1,6 @@
 ---
-title: "Exploration and Comments"
-author: "Mirco Bazzani,Krupicz Greta"
+title: "Exploration, Tidy data and Linear, lasso + ridge"
+author: "Mirco Bazzani"
 date: "11/30/2020"
 output: html_document
 ---
@@ -303,95 +303,85 @@ summary(lm_fit)
 
 tst$predict <- stats::predict(lm_fit, tst)
 
+
 tst %>% mutate(predictors = exp(predict)) -> tst
+na.omit(tst) -> tst
+
+RMSE(tst$predictors, tst$rent_full)
+
 
 tst <- tst[-7863,] #deleting outlier
 
 ggplot(tst, aes(rent_full, predictors)) +
   geom_point()
 
+
 ```
 
 We significantly lost prediction power, but it can be used as an approximate regression model.
 
-But I want to further improve on the model. That's why I am going to take another approach, and fit a Lassoo-Regression on the Dataset that contains *both* Micro Ratings and our standard regressor. I'll keep the rent_full value logged.
+But I want to further improve on the model. That's why I am going to take another approach, and fit a Lasso / Ridge-Regression on the Dataset that contains *both* Micro Ratings and our standard regressors.
 
-Let's see where we land:
+Let's see where we land.
 
-NOTE: the first lassoo model only produces errors (if we accept a Stackoverflow-investigation due to an error in the C+ code). I'll use a second model
+I need to convert the dataset first, because the caret-package I am going to use does not work with factors and logical values.
 
-```{r lassoo prep, eval=FALSE, include=FALSE}
-library(lasso2)
-
-training_reduced_large %>% select(!c(floors, GDENR, Micro_rating_ServicesAndNature)) -> baseset
-
-split_size <- .8
-sample_s <- floor(split_size * nrow(baseset))
-set.seed(123)
-train_index <- sample(seq_len(nrow(baseset)), size = sample_size)
-
-training_large <- baseset[train_index,]
-test_large <- baseset[-train_index,]
-
-lass_bas <- summary(l1ce(rent_full ~ ., data = select_if(training_large,is.numeric)))$coef
-lass_2 <- summary(l1ce(rent_full ~ ., data = select(training_large, c(rent_full,
-                                                              area,
-                                                              msregion,
-                                                              rooms,
-                                                              year_built,
-                                                              Micro_rating_Accessibility,
-                                                              Micro_rating_DistrictAndArea,
-                                                              Anteil_auslaend,
-                                                              apoth_pix_count_km2,
-                                                              avg_anzhl_geschosse,
-                                                              dist_to_4G,
-                                                              dist_to_lake,
-                                                              dist_to_river,
-                                                              restaur_pix_count_km2))))$coef
-
-lass_3 <- summary(l1ce(rent_full ~ ., data = select(training_large, c(rent_full,
-                                                              area,
-                                                              msregion,
-                                                              rooms,
-                                                              Micro_rating_DistrictAndArea,
-                                                              apoth_pix_count_km2,
-                                                              avg_anzhl_geschosse,
-                                                              dist_to_4G,
-                                                              dist_to_river,
-                                                              restaur_pix_count_km2))))$coef
-
-```
-
-Imputation of Values in order to deal with NAs:
+I'll then only choose values with a significant effect on the rent.
 
 
-```{r}
+```{r preparation for lasso, include=FALSE}
 
 training_reduced_large %>% select(!c(GDENR)) -> baseset
-summary(baseset_2)
-print(levels(baseset$KTKZ))
+summary(baseset)
 
 #Create a model that is computable by the new mode. It only works with integers
 baseset <- baseset %>% mutate_if(is.factor, as.integer) %>% mutate_if(is.logical, as.integer)
 summary(baseset)
 
+summary(lm(data = baseset, formula = log(rent_full) ~.))
+
+#choosing significant variables with only a small ampint of NA
+
+base_impute <- baseset %>% select(rent_full,
+                                  KTKZ,
+                                  area,
+                                  msregion,
+                                  cabletv,
+                                  elevator,
+                                  balcony,
+                                  parking_indoor,
+                                  parking_outside,
+                                  quarter_general,
+                                  rooms,
+                                  Micro_rating,
+                                  Micro_rating_NoiseAndEmission,
+                                  Micro_rating_Accessibility,
+                                  Micro_rating_DistrictAndArea,
+                                  Micro_rating_SunAndView,
+                                  Noise_max,
+                                  apoth_pix_count_km2,
+                                  avg_anzhl_geschosse,
+                                  dist_to_4G,
+                                  dist_to_school_1,
+                                  dist_to_haltst,
+                                  dist_to_train_stat,
+                                  geb_wohnnutz_total,
+                                  dist_to_river,
+                                  restaur_pix_count_km2,
+                                  superm_pix_count_km2)
+
+
 
 library(mice)
 #we first impute the missing values based on a multivariate imputation
-test_impute <- mice(baseset, seed = 123)
-
-test_impute$imp$floors 
-test_impute$imp$Anteil_auslaend 
-test_impute$imp$anteil_efh
-test_impute$imp$year_built
-test_impute$imp$avg_anzhl_geschosse
+test_impute <- mice(base_impute, m = 1, seed = 123)
 
 complete_set <- complete(test_impute,1)
-summary(baseset)
 
 summary(lm(data = baseset, formula = rent_full ~.))
 
 summary(lm(data = complete_set, formula = rent_full ~.))
+
 
 summary(complete_set)
 
@@ -404,59 +394,159 @@ Result: the overall fit of the model got worse!
 
 Try 2, now with lasso and ridge-comparison.
 
-```{r}
-no_na <- na.omit(baseset)
+```{r Lasso Ridge and linear model, echo=FALSE}
+set.seed(4900)
+
+#Create a model that is computable by the new mode. It only works with integers
+base_lasso <- complete_set %>% mutate_if(is.factor, as.integer) %>% mutate_if(is.logical, as.integer)
+
 
 #Splitting up X and Y variables
-X <- no_na %>% select(!c(rent_full))
-Y <- no_na %>% select(rent_full)
+
+X <- base_lasso
+
+
 
 #Normalizing data
-processed <- preProcess(X, method = c("center", "scale"))
-X <- predict(processed, X)
+#processed <- preProcess(X, method = c("center", "scale"))
+#X <- predict(processed, X)
 
 
-index <- createDataPartition(Y$rent_full, p=0.75, list=FALSE)
+index <- createDataPartition(X$rent_full, p=0.75, list=FALSE)
 
-X_train <- X[ index, ]
-X_test <- X[-index, ]
-Y_train <- Y[index,]
-Y_test<-Y[-index,]
+X_train <- X[index,2:27]
+X_test <- X[-index,2:27 ]
+Y_train <- X[index,1]
+Y_test<-X[-index,1]
 
-lasso <- caret::train(x = X_train, 
+lasso_train <- caret::train(x = X_train, 
                       y = Y_train,
                       method = "glmnet", 
                       tuneGrid = expand.grid(alpha = 1, lambda = 1))
 
-lasso_test <- train(x = X_train[,2:37],
-                    y = X_train[,1],
-                    method = "glmnet", 
-                    tuneGrid = expand.grid(alpha = 1, lambda = 1))
+ridge_train <- caret::train(x = X_train, 
+                      y = Y_train,
+                      method = "glmnet", 
+                      tuneGrid = expand.grid(alpha = 0, lambda = 1))
 
-summary(X_train)
+linear_train <- caret::train(x = X_train, 
+                      y = Y_train,
+                      method = "lm")
+
+#create predictions
+predictions_lasso <- lasso_train %>% predict(X_test)
+predictions_ridge <- ridge_train %>% predict(X_test)
+predictions_linear <- linear_train %>% predict(X_test)
+
+
+#get R2 score of predictions
+data.frame( Ridge_R2 = R2(predictions_ridge, Y_test),
+            Lasso_R2 = R2(predictions_lasso, Y_test),
+            Linear_R2 = R2(predictions_linear, Y_test))
+
+#get MSE of predictions
+data.frame( Ridge_RMSE = RMSE(predictions_ridge, Y_test) , 
+  Lasso_RMSE = RMSE(predictions_lasso, Y_test),
+  Linear_RMSE = RMSE(predictions_linear, Y_test))
+
+#Optimising the lambda regularization parameter by choosing the best R2 value
+
+parameters <- c(seq(0.1, 2, by =0.1) ,  seq(2, 5, 0.5) , seq(5, 25, 1))
+
+lasso_opt<-train(y = Y_train,
+                 x = X_train,
+                 method = 'glmnet', 
+                 tuneGrid = expand.grid(alpha = 1, lambda = parameters) ,
+                 metric =  "Rsquared"
+               ) 
+
+ridge_opt<-train(y = Y_train,
+                 x = X_train,
+                 method = 'glmnet', 
+                 tuneGrid = expand.grid(alpha = 0, lambda = parameters),
+                 metric =  "Rsquared"
+               ) 
+linear_opt<-train(y = Y_train, 
+              x = X_train, 
+              method = 'lm',
+              metric =  "Rsquared"
+              )
+
+print(paste0('Lasso best parameters: ' , lasso_opt$finalModel$lambdaOpt))
+print(paste0('Ridge best parameters: ' , ridge_opt$finalModel$lambdaOpt))
+
+predictions_lasso_opt <- lasso_opt %>% predict(X_test)
+predictions_ridge_opt <- ridge_opt %>% predict(X_test)
+predictions_linear_opt <- linear_opt %>% predict(X_test)
+
+data.frame(
+  Ridge_R2 = R2(predictions_lasso_opt, Y_test),
+  Lasso_R2 = R2(predictions_lasso_opt, Y_test),
+  Linear_R2 = R2(predictions_linear_opt, Y_test)
+)
+
+print("Optimized coefficients:")
+data.frame(
+  ridge = as.data.frame.matrix(coef(ridge_opt$finalModel, ridge_opt$finalModel$lambdaOpt)),
+  lasso = as.data.frame.matrix(coef(lasso_opt$finalModel, lasso_opt$finalModel$lambdaOpt)), 
+  linear = (linear_opt$finalModel$coefficients)
+) %>%   rename(lasso = X1, ridge = X1.1)
+
+
+```
+
+All of our models have similar results. Lets check the predictions vs. the actual values in a scatterplot:
+
+```{r Comparison plot models, echo=FALSE}
+lasso_scatter <- as_tibble(as_vector(predictions_lasso_opt))
+
+lasso_scatter$true <- Y_test
+
+ggplot(lasso_scatter, aes(true,value)) +
+  geom_point() +
+  labs(title = "Optimized Lasso model",
+       subtitle = "True values vs. predictions",
+       xlab = "Actual values",
+       ylab = "Predictions")
+
+plot(lasso_opt)
+
+ridge_scatter <- as_tibble(as_vector(predictions_ridge_opt))
+
+ridge_scatter$true <- Y_test
+
+ggplot(ridge_scatter, aes(true,value)) +
+  geom_point() +
+    labs(title = "Optimized Ridge model",
+       subtitle = "True values vs. predictions",
+       xlab = "Actual values",
+       ylab = "Predictions")
+
+plot(ridge_opt)
+
+linear_scatter <- as_tibble(as_vector(predictions_linear_opt))
+
+linear_scatter$true <- Y_test
+
+ggplot(linear_scatter, aes(true,value)) +
+  geom_point() +
+   labs(title = "Standard Linear model",
+       subtitle = "True values vs. predictions",
+       xlab = "Actual values",
+       ylab = "Predictions")
+
+```
+
+That's not really a good result. Let's look how far off we are:
+
+```{r Prediction offset, echo=FALSE}
+print("Amount of predictions that were off by 400.- CHF")
+nrow(lasso_scatter[c(which((lasso_scatter$true - lasso_scatter$value) > 400 | (lasso_scatter$value- lasso_scatter$true) > 400 )),])
+
 ```
 
 
-
-Let's bootstrap our model:
-
-```{r}
-library(boot)
-
-bootReg <- function(formula, data, index){
-  d <- data[index,]
-  fit <- lm(formula, data = d)
-  return(coef(fit))
-}
-
-subset_test <- tail(tr_mr, 300)
-subset_train <- head(tr_mr, nrow(tr_mr)-300)
-
-bootResults <- boot(statistic = bootReg, formula = log(rent_full) ~ . , data = tr_mr, R = 1000)
-
-boot.ci(bootResults, type = "bca")
-
-```
+Here we have a List of all the values that were off by a margin of 400.- CHF (aproximately the RMSE) - that's nearly 1/4 of the testset. We really need a better model.
 
 
 
