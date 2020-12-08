@@ -40,7 +40,7 @@ The dataset is way to extensive. We wil therefore kick out all Variables with a 
 
 ```{r}
 
-training %>% mutate_at(c("KTKZ", "GDENR", "floors", "quarter_general"), as.factor) %>% 
+training %>% mutate_at(c("KTKZ", "GDENR", "floors", "quarter_general",""), as.factor) %>% 
   mutate_at(c("balcony","cabletv","elevator","kids_friendly",
               "parking_indoor","parking_outside"), as.logical) %>%
   mutate(year_built = as.numeric(year_built)) %>% 
@@ -56,6 +56,7 @@ training %>% select(rent_full,
                     GDENR, #If we want to match our dataset with external data
                     KTKZ, #Could be interesting, as flat prices vary per canton
                     area, 
+                    home_type,
                     balcony, #Small amount of missing values
                     cabletv, #Small amount of missing values
                     elevator,
@@ -209,27 +210,7 @@ Note: The dependent variable is skewed as well, but if we log this one too the i
 
 Furthermore: the log-regression makes sense for the linear model, but I do not know if we should do that for the other aproaches as well.
 
-```{r log transformation}
-training_no_microrating %>% 
-  mutate(across(c("area",
-                  "Avg_size_household", 
-                  "dist_to_haltst",
-                  "dist_to_highway",
-                  "dist_to_lake",
-                  "dist_to_main_stat",
-                  "dist_to_river",
-                  "dist_to_school_1",
-                  "dist_to_train_stat"), 
-                log)) -> training_no_mr_log
 
-training_no_mr_log %>%
-  keep(is.numeric) %>% 
-  gather() %>% 
-  ggplot(aes(value)) +
-    facet_wrap(~ key, scales = "free") +
-    geom_histogram()
-
-```
 
 
 ### Linear Model
@@ -547,6 +528,177 @@ nrow(lasso_scatter[c(which((lasso_scatter$true - lasso_scatter$value) > 400 | (l
 
 
 Here we have a List of all the values that were off by a margin of 400.- CHF (aproximately the RMSE) - that's nearly 1/4 of the testset. We really need a better model.
+
+
+```{r Lasso Ridge and linear model, echo=FALSE}
+
+training_reduced_large %>% 
+  mutate(home_type = as.factor(home_type)) -> training_reduced_large
+
+training_reduced_large %>% 
+  mutate(home_type = as.factor(home_type)) %>% 
+  mutate(across(c("area",
+                  "Avg_size_household", 
+                  "dist_to_haltst",
+                  "dist_to_highway",
+                  "dist_to_lake",
+                  "dist_to_main_stat",
+                  "dist_to_river",
+                  "dist_to_school_1",
+                  "dist_to_train_stat"), 
+                log)) -> training_logged
+
+training_logged %>% select(!c(GDENR)) -> base_log_imp
+summary(base_log_imp)
+
+#Create a model that is computable by the new mode. It only works with integers
+summary(baseset)
+
+summary(lm(data = training_reduced_large, formula = log(rent_full) ~.))
+
+#choosing significant variables with only a small ampint of NA
+
+base_imputed_log <- base_log_imp %>% select(rent_full,
+                                  KTKZ,
+                                  area,
+                                  msregion,
+                                  cabletv,
+                                  elevator,
+                                  balcony,
+                                  parking_indoor,
+                                  parking_outside,
+                                  quarter_general,
+                                  rooms,
+                                  Micro_rating,
+                                  Micro_rating_NoiseAndEmission,
+                                  Micro_rating_Accessibility,
+                                  Micro_rating_DistrictAndArea,
+                                  Micro_rating_SunAndView,
+                                  Noise_max,
+                                  apoth_pix_count_km2,
+                                  avg_anzhl_geschosse,
+                                  dist_to_4G,
+                                  dist_to_school_1,
+                                  dist_to_haltst,
+                                  dist_to_train_stat,
+                                  geb_wohnnutz_total,
+                                  dist_to_river,
+                                  restaur_pix_count_km2,
+                                  superm_pix_count_km2)
+
+
+
+library(mice)
+#we first impute the missing values based on a multivariate imputation
+test_impute_log <- mice(base_log_imp, m = 1, seed = 4900)
+
+complete_set_log <- complete(test_impute_log,1)
+
+summary(lm(data = base_imputed_log, formula = rent_full ~.))
+
+summary(lm(data = complete_set_log, formula = log(rent_full) ~.))
+
+
+summary(complete_set)
+
+X <- base_imputed_log
+
+
+
+#Normalizing data
+#processed <- preProcess(X, method = c("center", "scale"))
+#X <- predict(processed, X)
+
+
+index <- createDataPartition(training_reduced_large$rent_full, p=0.75, list=FALSE)
+
+X_train <- X[index,1:27]
+X_test <- X[-index,2:27 ]
+Y_train <- X[index,1]
+Y_test<-X[-index,1]
+
+lm_testing <- lm(data = X_train, formula = log(rent_full) ~.)
+
+pred <- predict(lm_testing,X_test)
+df <- data.frame(exp(pred), Y_test$rent_full)
+df <- na.omit(df)
+RMSE(df$exp.pred., df$Y_test.rent_full)
+
+lasso_train <- caret::train(x = X_train, 
+                            y = Y_train$rent_full,
+                            method = "glmnet", 
+                            tuneGrid = expand.grid(alpha = 1, lambda = 1))
+
+ridge_train <- caret::train(x = X_train, 
+                      y = Y_train,
+                      method = "glmnet", 
+                      tuneGrid = expand.grid(alpha = 0, lambda = 1))
+
+linear_train <- caret::train(x = X_train, 
+                      y = Y_train,
+                      method = "lm")
+
+#create predictions
+predictions_lasso <- lasso_train %>% predict(X_test)
+predictions_ridge <- ridge_train %>% predict(X_test)
+predictions_linear <- linear_train %>% predict(X_test)
+
+
+#get R2 score of predictions
+data.frame( Ridge_R2 = R2(predictions_ridge, Y_test),
+            Lasso_R2 = R2(predictions_lasso, Y_test),
+            Linear_R2 = R2(predictions_linear, Y_test))
+
+#get MSE of predictions
+data.frame( Ridge_RMSE = RMSE(predictions_ridge, Y_test) , 
+  Lasso_RMSE = RMSE(predictions_lasso, Y_test),
+  Linear_RMSE = RMSE(predictions_linear, Y_test))
+
+#Optimising the lambda regularization parameter by choosing the best R2 value
+
+parameters <- c(seq(0.1, 2, by =0.1) ,  seq(2, 5, 0.5) , seq(5, 25, 1))
+
+lasso_opt<-train(y = Y_train$rent_full,
+                 x = X_train,
+                 method = 'glmnet', 
+                 tuneGrid = expand.grid(alpha = 1, lambda = parameters) ,
+                 metric =  "Rsquared"
+               ) 
+
+ridge_opt<-train(y = Y_train,
+                 x = X_train,
+                 method = 'glmnet', 
+                 tuneGrid = expand.grid(alpha = 0, lambda = parameters),
+                 metric =  "Rsquared"
+               ) 
+linear_opt<-train(y = Y_train, 
+              x = X_train, 
+              method = 'lm',
+              metric =  "Rsquared"
+              )
+
+print(paste0('Lasso best parameters: ' , lasso_opt$finalModel$lambdaOpt))
+print(paste0('Ridge best parameters: ' , ridge_opt$finalModel$lambdaOpt))
+
+predictions_lasso_opt <- lasso_opt %>% predict(X_test)
+predictions_ridge_opt <- ridge_opt %>% predict(X_test)
+predictions_linear_opt <- linear_opt %>% predict(X_test)
+
+data.frame(
+  Ridge_R2 = R2(predictions_lasso_opt, Y_test),
+  Lasso_R2 = R2(predictions_lasso_opt, Y_test),
+  Linear_R2 = R2(predictions_linear_opt, Y_test)
+)
+
+print("Optimized coefficients:")
+data.frame(
+  ridge = as.data.frame.matrix(coef(ridge_opt$finalModel, ridge_opt$finalModel$lambdaOpt)),
+  lasso = as.data.frame.matrix(coef(lasso_opt$finalModel, lasso_opt$finalModel$lambdaOpt)), 
+  linear = (linear_opt$finalModel$coefficients)
+) %>%   rename(lasso = X1, ridge = X1.1)
+
+
+```
 
 
 

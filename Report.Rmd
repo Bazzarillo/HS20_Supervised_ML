@@ -1,0 +1,703 @@
+---
+title: "Report"
+author: "Mirco Bazzani"
+date: "12/7/2020"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+library(tidyverse)
+library(ggplot2)
+library(gridExtra)
+library(ggcorrplot)
+library(caret)
+library(fastDummies)
+library(kableExtra)
+library(rpart)
+
+training <- read_csv("Data/training.csv")
+
+```
+
+## Importing the dataset
+
+Let's first take a look at the **dimensions** of the dataset - `dim(training)`.
+
+This would be every data analysts dream, but most of the 100 total columns mainly consist of missing values. This is why are going to reduce the dataset and only keep the ones wit a reasonable amount of missingness.
+
+
+
+```{r Create Datasets, include=FALSE}
+
+training %>% mutate_at(c("KTKZ", "GDENR", "floors", "quarter_general","home_type"), as.factor) %>% 
+  mutate_at(c("balcony","cabletv","elevator","kids_friendly",
+              "parking_indoor","parking_outside"), as.logical) %>%
+  mutate(year_built = as.numeric(year_built)) %>% 
+  replace_na(list(balcony = FALSE, 
+                  cabletv = FALSE,
+                  elevator= FALSE,
+                  kids_friendly= FALSE,
+                  parking_indoor= FALSE,
+                  parking_outside= FALSE)) %>% 
+  mutate(date = as.Date(date, format ="%d.%m.%Y")) -> training
+
+training %>% select(rent_full,
+                    KTKZ, #Could be interesting, as flat prices vary per canton
+                    area,
+                    lat,
+                    lon,
+                    home_type,
+                    balcony, #Small amount of missing values
+                    cabletv, #Small amount of missing values
+                    elevator,
+                    floors,
+                    msregion, #Not clear what this means
+                    parking_indoor,
+                    parking_outside,
+                    quarter_general,
+                    rooms,
+                    year_built,
+                    Micro_rating,
+                    Micro_rating_NoiseAndEmission,
+                    Micro_rating_ServicesAndNature,
+                    Micro_rating_Accessibility,
+                    Micro_rating_DistrictAndArea,
+                    Micro_rating_SunAndView,
+                    wgh_avg_sonnenklasse_per_egid,
+                    Anteil_auslaend,
+                    Avg_age,
+                    Avg_size_household,
+                    Noise_max,
+                    anteil_efh,
+                    apoth_pix_count_km2,
+                    avg_anzhl_geschosse,
+                    dist_to_4G,
+                    dist_to_haltst,
+                    dist_to_highway,
+                    dist_to_lake,
+                    dist_to_main_stat,
+                    dist_to_school_1,
+                    dist_to_train_stat,
+                    geb_wohnnutz_total,
+                    dist_to_river,
+                    restaur_pix_count_km2, 
+                    superm_pix_count_km2) -> training_reduced_large
+
+training %>% select(rent_full, #If we want to match our dataset with external data
+                    KTKZ, #Could be interesting, as flat prices vary per canton
+                    area, 
+                    home_type,
+                    lat,
+                    lon,
+                    balcony, #Small amount of missing values
+                    cabletv, #Small amount of missing values
+                    elevator,
+                    floors,
+                    msregion, #Not clear what this means
+                    parking_indoor,
+                    parking_outside,
+                    quarter_general,
+                    rooms,
+                    year_built,
+                    Micro_rating,
+                    Micro_rating_NoiseAndEmission,
+                    Micro_rating_Accessibility,
+                    Micro_rating_DistrictAndArea,
+                    Micro_rating_SunAndView,
+                    ) -> training_microrating
+
+training %>% select(rent_full,
+                    KTKZ, #Could be interesting, as flat prices vary per canton
+                    area, 
+                    balcony, #Small amount of missing values
+                    cabletv, #Small amount of missing values
+                    elevator,
+                    home_type,
+                    lat,
+                    lon,
+                    floors,
+                    msregion, #Not clear what this means
+                    parking_indoor,
+                    parking_outside,
+                    quarter_general,
+                    rooms,
+                    year_built,
+                    Anteil_auslaend,
+                    Avg_age,
+                    Avg_size_household,
+                    Noise_max,
+                    anteil_efh,
+                    apoth_pix_count_km2,
+                    avg_anzhl_geschosse,
+                    dist_to_4G,
+                    dist_to_haltst,
+                    dist_to_highway,
+                    dist_to_lake,
+                    dist_to_main_stat,
+                    dist_to_school_1,
+                    dist_to_train_stat,
+                    geb_wohnnutz_total,
+                    dist_to_river,
+                    restaur_pix_count_km2, 
+                    superm_pix_count_km2) -> training_no_microrating
+
+```
+
+We split the data into 3 datasets:
+
+* One includes both micro ratings and descriptive variables about the surrounding area. k = 41 variables.
+* One only contains the micro ratings and data about the flat. k = 22 variables.
+* One without the micro ratings in order to surpass possible covariance in linear regression.
+
+### Basic Exploration
+
+Let's look at the distribution of our variables. The first plot only shows numeric values
+
+```{r echo=FALSE}
+
+training_reduced_large %>%
+  keep(is.numeric) %>% 
+  gather() %>% 
+  ggplot(aes(value)) +
+    facet_wrap(~ key, scales = "free") +
+    geom_histogram() +
+  labs(title = "Histograms of all numeric values",
+       subtitle = "Rough overview over distribution")
+
+```
+
+
+Some of the numeric variables. We can easily spot that most of them are not evenly distributet, and have either a right- or a left skew.
+
+This could be fixed by a log-transformation. One vairable that is severely skewed is the distance to the next bus stop. Let's log transform it:
+
+```{r Log trans, echo=FALSE}
+
+training_reduced_large %>% select(dist_to_haltst) %>% 
+  mutate(dist_to_haltst = log(dist_to_haltst)) %>% 
+  ggplot(aes(dist_to_haltst)) +
+  geom_histogram() +
+  labs(title = "Log-transformation of distance to the next bus stop")
+
+```
+
+The **micro-ratings** follow an approximate normal distribution, and are therefore ok. We could use them as regressors without any hassle.
+
+But most of the numeric values are right skewed, this includes:
+area
+"Avg_size_household", 
+"dist_to_haltst",
+"dist_to_highway",
+"dist_to_lake",
+"dist_to_main_stat",
+"dist_to_river",
+"dist_to_school_1",
+"dist_to_train_stat"
+
+A log-transformation could come in handy on order to improve the regression model.
+
+The same counts for the dependent variable:
+
+```{r echo=FALSE}
+trans <- training_reduced_large %>% select(rent_full) %>% 
+  mutate(rent_log = log(rent_full)) %>% 
+  ggplot(aes(rent_log)) +
+  geom_histogram() +
+  labs(title = "Log-transformation of payed rent") +
+  xlab("Logged rent")
+
+not <- training_reduced_large %>% select(rent_full) %>% 
+  ggplot(aes(rent_full)) +
+  geom_histogram() +
+  labs(title = "Standard distribution of rent") +
+  xlab("Full rent")
+
+grid.arrange(not,trans, nrow = 1)
+```
+
+The log-distribution removed most of the swekedness in the dependent variable as well, so we'll compare a logged regression to non-logged values afterwards.
+
+```{r log transformation, include=FALSE}
+training_reduced_large %>% 
+  mutate(across(c("area",
+                  "rent_full",
+                  "Avg_size_household", 
+                  "dist_to_haltst",
+                  "dist_to_highway",
+                  "dist_to_lake",
+                  "dist_to_main_stat",
+                  "dist_to_river",
+                  "dist_to_school_1",
+                  "dist_to_train_stat"), 
+                log)) -> training_logged
+```
+
+
+Next, we are going to normalize our data and scaling it so that every numeric value (expect the rent) ranges from 0 to 1.
+
+```{r}
+library(BBmisc)
+
+training_log_norm <- normalize(training_logged[,-1], method = c("range"),range = c(0, 1))
+training_log_norm$rent_full <- training_logged$rent_full
+
+training_l_norm <-  normalize(training_reduced_large[,-1], method = c("range"),range = c(0, 1))
+training_l_norm$rent_full <- training_reduced_large$rent_full
+
+
+```
+
+Let's check if it worked. 
+
+The new max in rent: `max(training_l_norm$rent_full)`
+The new max in area: `max(training_l_norm$msregion)`
+
+Yes, the normalization was successful.
+
+Lastly, we should look at the correlation plot of our numerical values. 
+
+```{r corrplot, echo=FALSE}
+training_l_norm %>%
+  keep(is.numeric) %>% na.omit() -> numeric_large
+
+ggcorrplot(cor(numeric_large), type = "lower", insig = "blank") + labs(title= "Correlation Matrix",
+       subtitle = "Insignificant values are blank")
+
+```
+What we see here is some minimal correlation between the regressors, but nearly no correlation between regressors and the rent.
+
+It looks better when we group the regressors by ther **flat type**; we should get good predictions by using the home type.
+
+```{r density plot, echo=FALSE}
+
+ggplot(training_l_norm, aes(rent_full)) +
+  geom_density(aes(fill = home_type, alpha = .3)) +
+  labs(title = "Density plot of rent by different flat types") +
+  xlab("Rent")
+
+```
+Nearly no information can be gathered by using the **Quarter type** measure.
+
+```{r density plot 2 , echo=FALSE}
+
+ggplot(training_l_norm, aes(rent_full)) +
+  geom_density(aes(fill = quarter_general, alpha = .2)) +
+  labs(title = "Density plot of rent by Quarter type",
+       subtitle = "Extreme overlap, little to no information value") +
+  xlab("Rent")
+
+```
+
+
+Lastly, we want to look at how the micro rating and the area correlate with our rent.
+
+
+```{r scatterplot, echo=FALSE}
+
+p_mic <- ggplot(training_l_norm, aes(rent_full, Micro_rating)) +
+  geom_jitter() +
+  labs(title = "Scatterplot of the Microrating vs. rent",
+       subtitle = "No clear correlation") +
+  xlab("Rent") +
+  ylab("Micro rating")
+
+p_ar <- ggplot(training_l_norm, aes(rent_full, area)) +
+  geom_point() +
+  labs(title = "Scatterplot of the area vs. rent",
+       subtitle = "Clear correlation") +
+  xlab("Rent") +
+  ylab("Area")
+
+grid.arrange(p_mic,p_ar, nrow = 1)
+```
+
+What we can take away from this is that area and Home_type need to be used as regressors.
+
+
+## Linear Regresssion
+
+The first method we want to try out is a multiple linear regression. We are going to compare the logged dataset and the non-logged without any feature engineering just to get an overview over what predicts better.
+
+Both of the datasets are going to be cross validated, using a **80/20** split and then comparing the **Rooted Square Mean Errors**
+
+As our model can't handle missing values, we are first just working with, which significantly reduces our dataset, but should work as a baseline.
+
+The remaining dimensions are:
+
+`dim(na.omit(training_l_norm))`
+
+Because we work with factors that have many possible outcome values like the canton and floors we are going to leave them out in this first try.
+
+```{r linear model 1, echo=FALSE}
+set.seed(123)
+
+omitted <- na.omit(training_l_norm)
+
+omitted <- omitted %>% select(!c(KTKZ, floors)) #Factors create errors due to their many dimensions
+
+index <- createDataPartition(omitted$rent_full, p=0.8, list=FALSE)
+
+X <- omitted
+X_train <- X[index,]
+X_test <- X[-index, 1:38]
+Y_test<- X[-index, 39]
+
+linear_fit <- lm(formula = rent_full ~., data = X_train)
+linear_predict <- predict(linear_fit,X_test)
+predictions_1 <- data.frame(linear_predict,Y_test$rent_full)
+
+RMSE_lm <- RMSE(predictions_1$linear_predict,predictions_1$Y_test.rent_full)
+
+
+#Same with logged values
+
+omitted_log <- na.omit(training_log_norm)
+
+omitted_log <- omitted_log %>% select(!c(KTKZ, floors))
+
+index <- createDataPartition(omitted_log$rent_full, p=0.8, list=FALSE)
+
+X <- omitted_log
+
+X_train <- X[index,]
+X_test <- X[-index, 1:38]
+Y_test<- X[-index, 39]
+
+linear_fit <- lm(formula = rent_full ~., data = X_train)
+linear_predict <- predict(linear_fit,X_test)
+predictions_1 <- data.frame(exp(linear_predict),exp(Y_test$rent_full))
+
+RMSE_lm_log <- RMSE(predictions_1$exp.linear_predict.,predictions_1$exp.Y_test.rent_full.)
+
+kable(data.frame("RMSE_logged" = RMSE_lm_log,  "RMSE_standard" = RMSE_lm))
+
+```
+
+The results are a **RMSE** or `RMSE_lm` for the linear model without logged values, and a **RMSE** of `RMSE_lm_log` for the logged model.
+
+The model fit for the logged values looks as follows:
+
+`plot(linear_fit)`
+
+From the Normal Q-Q we can assess that the model overpredicts cheap flats and underpredicts the most expensive ones.
+
+The next step we are going to take is just inserting those columns that do not contain any missing values into the model in order to keep the full set of rows.
+
+```{r}
+set.seed(123)
+
+no_na <- training_l_norm %>%
+    select_if(~ !any(is.na(.)))
+
+index <- createDataPartition(no_na$rent_full, p=0.8, list=FALSE)
+
+X <- no_na
+X_train <- X[index,]
+X_test <- X[-index, 1:25]
+Y_test<- X[-index,26]
+
+linear_fit <- lm(formula = rent_full ~., data = X_train)
+
+linear_predict <- predict(linear_fit,X_test)
+predictions_1 <- data.frame(linear_predict,Y_test$rent_full)
+
+RMSE_lm_nona <- RMSE(predictions_1$linear_predict,predictions_1$Y_test.rent_full)
+
+#####
+
+no_na_log <- training_log_norm %>%
+    select_if(~ !any(is.na(.)))
+
+index <- createDataPartition(no_na_log$rent_full, p=0.8, list=FALSE)
+
+
+X <- no_na_log
+X_train <- X[index,]
+X_test <- X[-index, 1:25]
+Y_test<- X[-index,26]
+
+linear_fit <- lm(formula = rent_full ~., data = X_train)
+
+linear_predict <- predict(linear_fit,X_test)
+predictions_1 <- data.frame(exp(linear_predict),exp(Y_test$rent_full))
+
+RMSE_lm_nona_log <- RMSE(predictions_1$exp.linear_predict.,predictions_1$exp.Y_test.rent_full.)
+
+kable(data.frame("RMSE_logged" = RMSE_lm_nona_log,  "RMSE_standard" = RMSE_lm_nona))
+
+```
+
+The dimensions here are `dim(no_na)`. But as we see from the new RSMEs, this approach kicked out most of the important columns, which left us with a significant decrease of prediction power. 
+
+In this scenario, the standard values predict better, but this is due to model fluctuations; both the logged and the standard values are sometimes better, sometimes worse.
+
+### Imputation
+
+Our base dataset consists of way to many missing values. This why we are going to impute those NAs using Multiple Imputation
+
+
+```{r Imputation, include=FALSE}
+
+baseset <- training_l_norm %>% select(!c(KTKZ,home_type)) %>% mutate_if(is.factor, as.integer) %>% mutate_if(is.logical, as.integer)
+
+#Mice only works with numerical data
+library(mice)
+
+#we first impute the missing values based on a multivariate imputation
+test_impute <- mice(baseset, m = 1, seed = 123)
+
+complete_set <- complete(test_impute,1)
+
+complete_set <- complete_set %>% mutate_at(c( "floors", "quarter_general"), as.factor) %>%  mutate_at(c("balcony","cabletv","elevator", "parking_indoor","parking_outside"), as.logical)
+
+complete_set$KTKZ <- training_reduced_large$KTKZ #I made it this way because otherwise I would have to relevel the whole set. 
+complete_set$home_type <- training_reduced_large$home_type
+
+#What we see is that an imputation works well for the aggreagte level - the coefficients (median, mean & quantile) stay the same, but the really loose
+#interpretability on a row by row-level.
+
+```
+
+
+```{r}
+
+set.seed(123)
+
+index <- createDataPartition(complete_set$rent_full, p=0.8, list=FALSE)
+
+X <- complete_set
+X_train <- X[index,]
+X_test <- X[-index, c(1:38,40:41)]
+Y_test<- X[-index,39]
+
+linear_fit <- lm(formula = log(rent_full) ~ . + rooms * area, data = X_train)
+
+summary(linear_fit)
+
+linear_predict <- predict(linear_fit,X_test)
+predictions_1 <- data.frame(exp(linear_predict),Y_test)
+
+RMSE_lm_imp <- RMSE(predictions_1$exp.linear_predict.,predictions_1$Y_test)
+```
+
+The imputation was absolutely horrible, with a RMSE of `RMSE_lm_imp`. So imputing the whole dataset does not do the trick ; let's try something different.
+
+Why not choose those columns that don't have missing values like the Micro Ratings and only impute significant rows like the area and Rooms.
+
+```{r Imputation_2, include=FALSE}
+
+baseset <- no_na <- training_l_norm %>%
+    select_if(~ !any(is.na(.)))
+
+baseset$area <- training_l_norm$area
+baseset$rooms <- training_l_norm$rooms
+
+#we first impute the missing values based on a multivariate imputation
+test_impute <- mice(baseset, m = 1, seed = 123)
+
+complete_set <- complete(test_impute,1)
+complete_set_rl <- complete_set
+#What we see is that an imputation works well for the aggreagte level - the coefficients (median, mean & quantile) stay the same, but the really loose
+#interpretability on a row by row-level.
+
+set.seed(123)
+
+index <- createDataPartition(complete_set$rent_full, p=0.8, list=FALSE)
+
+X <- complete_set
+X_train <- X[index,]
+X_test <- X[-index, c(1:25,27:28)]
+Y_test<- X[-index,26]
+
+linear_fit <- lm(formula = rent_full ~ . + rooms * area, data = X_train)
+
+summary(linear_fit)
+
+linear_predict <- predict(linear_fit,X_test)
+predictions_1 <- data.frame(linear_predict,Y_test)
+
+RMSE_lm_imp <- RMSE(predictions_1$linear_predict,predictions_1$Y_test)
+
+```
+
+This version already delivered better results with a RMSE of `RMSE_lm_imp` and Regression Coefficients of `summary(linear_fit)`.
+
+I think this is the optimum we can get out of linear regression models.
+
+## Ridge and Lasso
+
+Building on the imputed dataset we gathered in the last computation, we teach a Ridge and Lasso model.
+
+You see the parameters of the trained models below; the method used was a resampling method that searches for the best lambda-value.
+
+```{r Ridge Lasso, include=FALSE}
+
+complete_set_rl
+
+set.seed(123)
+
+index <- createDataPartition(complete_set_rl$rent_full, p=0.8, list=FALSE)
+
+X <- complete_set_rl
+X %>% mutate_if(is.factor, as.integer) -> X
+X_train <- X[index,c(1:25,27:28)]
+X_test <- X[-index, c(1:25,27:28)]
+Y_train <- X[index,26]
+Y_test<- X[-index,26]
+
+summary(complete_set_rl)
+
+parameters <- c(seq(0.1, 2, by =0.1) ,  seq(2, 5, 0.5) , seq(5, 25, 1))
+
+lasso_opt<-train(y = Y_train,
+                 x = X_train,
+                 method = 'glmnet', 
+                 tuneGrid = expand.grid(alpha = 1, lambda = 1) ,
+                 metric =  "Rsquared") 
+
+ridge_opt<-train(y = Y_train,
+                 x = X_train,
+                 method = 'glmnet', 
+                 tuneGrid = expand.grid(alpha = 0, lambda = parameters),
+                 metric =  "Rsquared"
+               ) 
+
+linear_opt<-train(y = Y_train, 
+              x = X_train, 
+              method = 'lm',
+              metric =  "Rsquared"
+              )
+
+print(paste0('Lasso best parameters: ' , lasso_opt$finalModel$lambdaOpt))
+print(paste0('Ridge best parameters: ' , ridge_opt$finalModel$lambdaOpt))
+
+predictions_lasso_opt <- lasso_opt %>% predict(X_test)
+predictions_ridge_opt <- ridge_opt %>% predict(X_test)
+predictions_linear_opt <- linear_opt %>% predict(X_test)
+
+R2 <- data.frame(
+  Ridge_R2 = R2(predictions_lasso_opt, Y_test),
+  Lasso_R2 = R2(predictions_lasso_opt, Y_test),
+  Linear_R2 = R2(predictions_linear_opt, Y_test)
+)
+
+
+RMSE <- data.frame(
+  Ridge_RMSE = RMSE(predictions_lasso_opt, Y_test),
+  Lasso_RMSE = RMSE(predictions_lasso_opt, Y_test),
+  Linear_RMSE = RMSE(predictions_linear_opt, Y_test)
+)
+
+print("Optimized coefficients:")
+data.frame(
+  ridge = as.data.frame.matrix(coef(ridge_opt$finalModel, ridge_opt$finalModel$lambdaOpt)),
+  lasso = as.data.frame.matrix(coef(lasso_opt$finalModel, lasso_opt$finalModel$lambdaOpt)), 
+  linear = (linear_opt$finalModel$coefficients)
+) %>%   rename(lasso = X1, ridge = X1.1)
+```
+
+```{r}
+kable(RMSE)
+
+kable(R2)
+```
+
+All of the three models come to similar results using the imputed dataset.
+
+## Random Trees
+
+We build a basic regression tree, try to prune it and then fit a prediction model.
+
+```{r tree, echo=FALSE}
+
+set.seed(123)
+
+index <- createDataPartition(complete_set_rl$rent_full, p=0.8, list=FALSE)
+
+X_t <- complete_set_rl
+X_train_tree <- X_t[index,]
+X_test_tree <- X_t[-index, c(1:25,27:28)]
+Y_test_tree<- X_t[-index,26]
+
+fit_tree <- rpart(rent_full ~ . ,
+                  method = "anova",
+                  data = X_train_tree)
+
+rsq.rpart(fit_tree) #Increase of R2 per split vs decrease relative error per split
+
+plotcp(fit_tree) #Complexity Parameter of the Tree. The model goes with 6 splits as the optimum.
+
+pruned_tree_i <- prune(fit_tree, cp = fit_tree$cptable[which.min(fit_tree$cptable[, "xerror"]), "CP"])
+
+par(mfrow = c(1, 2)) # Two Plots
+
+plot(fit_tree, uniform = TRUE, margin = 0.1, main = "Original Tree")
+text(fit_tree, use.n = TRUE, all = TRUE, cex = 0.8)
+plot(pruned_tree_i, uniform = TRUE, margin = 0.1, main = "Pruned Tree")
+text(pruned_tree_i, use.n = TRUE, all = TRUE, cex = 0.8)
+
+predictions_tree_i <- predict(pruned_tree_i, X_test_tree)
+output_i <- data.frame(Y_test_tree, predictions_tree_i)
+
+RMSE(output_i$Y_test_tree,output_i$predictions_tree_i)
+```
+
+The RMSE is in the ranks of our Ridge and Lasso-Models wit `RMSE(output_i$Y_test_tree,output_i$predictions_tree_i)`.
+
+The best model until now was our Linear Regression based on the imputed dataset. 
+
+Let's use some more sofisticated regression trees, ctrees, as regression trees that are based on information Gain (the standard trees I've used so far) don't do the trick. I'll swap to **Conditional Inference Trees**.
+
+```{r Ctrees}
+library(party)
+
+fit_ctree <- ctree(formula = rent_full ~ ., data = X_train_tree)
+
+prediction_ctree <- predict(fit_ctree, X_test_tree)
+
+output_ctree <- data.frame(prediction_ctree, Y_test_tree)
+
+RMSE(output_ctree$rent_full,output_ctree$Y_test_tree)
+
+```
+
+
+The conditional trees work as follows:
+
+*"ctree, according to its authors (see chl's comments) avoids the following variable selection bias of rpart (and related methods): They tend to select variables that have many possible splits or many missing values. Unlike the others, ctree uses a significance test procedure in order to select variables instead of selecting the variable that maximizes an information measure (e.g. Gini coefficient)."*
+
+As we can see, with a RMSE of `RMSE(output_ctree$rent_full,output_ctree$Y_test_tree)` they are better at predicting
+the housing prices than all of my other models.
+
+## Random Forest
+
+```{r Random Forest, echo=TRUE}
+library(randomForest)
+
+X <- complete_set_rl
+X_train <- X[index,c(1:25,27:28)]
+X_test <- X[-index, c(1:25,27:28)]
+Y_train <- X[index,26]
+Y_test<- X[-index,26]
+
+fit_randomf <- randomForest(x=X_train, y = Y_train, ntree = 50)
+
+prediction_randomf <- predict(fit_randomf, X_test)
+
+output_randomf <- data.frame(prediction_randomf, Y_test)
+
+RMSE(output_randomf$prediction_randomf,output_randomf$Y_test)
+
+ggplot(output_randomf, aes(prediction_randomf,Y_test)) +
+  geom_point() +
+  labs(title = "Random Forest with 50 iterations",
+       subtitle = "Based on imputed dataset") +
+  xlab("Predictions") +
+  ylab("Actual values")
+
+```
+
+With only a RMSE of `RMSE(output_randomf$prediction_randomf,output_randomf$Y_test)`, the random forest of n = 50 trees got by far the best result! The output values are nearly linearilly distributed in comparison to the actual values.

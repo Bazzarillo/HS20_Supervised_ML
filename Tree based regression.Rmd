@@ -1,0 +1,362 @@
+---
+title: "Tree based regression"
+author: "Mirco Bazzani"
+date: "12/6/2020"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+library(tidyverse)
+library(ggplot2)
+library(gridExtra)
+library(ggcorrplot)
+library(caret)
+library(fastDummies)
+library(kableExtra)
+library(rpart)
+
+training <- read_csv("Data/training.csv")
+
+```
+
+### Data handling
+
+We take the datasets we've already created. I've included the data imputation, but am not completely sure if we are going no need that.
+
+```{r Dataset, include=FALSE}
+
+training %>% mutate_at(c("KTKZ", "GDENR", "floors", "quarter_general"), as.factor) %>% 
+  mutate_at(c("balcony","cabletv","elevator","kids_friendly",
+              "parking_indoor","parking_outside"), as.logical) %>%
+  mutate(year_built = as.numeric(year_built)) %>% 
+  replace_na(list(balcony = FALSE, 
+                  cabletv = FALSE,
+                  elevator= FALSE,
+                  kids_friendly= FALSE,
+                  parking_indoor= FALSE,
+                  parking_outside= FALSE)) %>% 
+  mutate(date = as.Date(date, format ="%d.%m.%Y")) -> training
+
+training %>% select(rent_full,
+                    KTKZ, #Could be interesting, as flat prices vary per canton
+                    area, 
+                    balcony, #Small amount of missing values
+                    cabletv, #Small amount of missing values
+                    elevator,
+                    floors,
+                    msregion, #Not clear what this means
+                    parking_indoor,
+                    parking_outside,
+                    quarter_general,
+                    rooms,
+                    year_built,
+                    Micro_rating,
+                    Micro_rating_NoiseAndEmission,
+                    Micro_rating_Accessibility,
+                    Micro_rating_DistrictAndArea,
+                    Micro_rating_SunAndView,
+                    Micro_rating_ServicesAndNature,
+                    wgh_avg_sonnenklasse_per_egid,
+                    Anteil_auslaend,
+                    Avg_age,
+                    Avg_size_household,
+                    Noise_max,
+                    anteil_efh,
+                    apoth_pix_count_km2,
+                    avg_anzhl_geschosse,
+                    dist_to_4G,
+                    dist_to_haltst,
+                    dist_to_highway,
+                    dist_to_lake,
+                    dist_to_main_stat,
+                    dist_to_school_1,
+                    dist_to_train_stat,
+                    geb_wohnnutz_total,
+                    dist_to_river,
+                    restaur_pix_count_km2, 
+                    superm_pix_count_km2) -> training_reduced_large
+
+training %>% select(rent_full, #If we want to match our dataset with external data
+                    GDENR, #If we want to match our dataset with external data
+                    KTKZ, #Could be interesting, as flat prices vary per canton
+                    area, 
+                    balcony, #Small amount of missing values
+                    cabletv, #Small amount of missing values
+                    elevator,
+                    floors,
+                    msregion, #Not clear what this means
+                    parking_indoor,
+                    parking_outside,
+                    quarter_general,
+                    rooms,
+                    year_built,
+                    Micro_rating,
+                    Micro_rating_NoiseAndEmission,
+                    Micro_rating_Accessibility,
+                    Micro_rating_DistrictAndArea,
+                    Micro_rating_SunAndView,
+                    Micro_rating_ServicesAndNature
+                    ) -> training_microrating
+
+training %>% select(rent_full,
+                    GDENR, #If we want to match our dataset with external data
+                    KTKZ, #Could be interesting, as flat prices vary per canton
+                    area, 
+                    balcony, #Small amount of missing values
+                    cabletv, #Small amount of missing values
+                    elevator,
+                    floors,
+                    msregion, #Not clear what this means
+                    parking_indoor,
+                    parking_outside,
+                    quarter_general,
+                    rooms,
+                    year_built,
+                    Anteil_auslaend,
+                    Avg_age,
+                    Avg_size_household,
+                    Noise_max,
+                    anteil_efh,
+                    apoth_pix_count_km2,
+                    avg_anzhl_geschosse,
+                    dist_to_4G,
+                    dist_to_haltst,
+                    dist_to_highway,
+                    dist_to_lake,
+                    dist_to_main_stat,
+                    dist_to_school_1,
+                    dist_to_train_stat,
+                    geb_wohnnutz_total,
+                    dist_to_river,
+                    restaur_pix_count_km2, 
+                    superm_pix_count_km2) -> training_no_microrating
+
+```
+
+```{r Imputation, include=FALSE}
+
+training_reduced_large -> baseset
+summary(baseset)
+
+#Create a model that is computable by the new mode. It only works with integers
+baseset <- baseset %>% mutate_if(is.factor, as.integer) %>% mutate_if(is.logical, as.integer)
+summary(baseset)
+
+summary(lm(data = baseset, formula = log(rent_full) ~.))
+
+#choosing significant variables with only a small ampint of NA
+
+base_impute <- baseset %>% select(rent_full,
+                                  KTKZ,
+                                  area,
+                                  msregion,
+                                  cabletv,
+                                  elevator,
+                                  balcony,
+                                  parking_indoor,
+                                  parking_outside,
+                                  quarter_general,
+                                  rooms,
+                                  Micro_rating,
+                                  Micro_rating_NoiseAndEmission,
+                                  Micro_rating_Accessibility,
+                                  Micro_rating_DistrictAndArea,
+                                  Micro_rating_SunAndView,
+                                  Noise_max,
+                                  apoth_pix_count_km2,
+                                  avg_anzhl_geschosse,
+                                  dist_to_4G,
+                                  dist_to_school_1,
+                                  dist_to_haltst,
+                                  dist_to_train_stat,
+                                  geb_wohnnutz_total,
+                                  dist_to_river,
+                                  restaur_pix_count_km2,
+                                  superm_pix_count_km2)
+
+
+
+library(mice)
+#we first impute the missing values based on a multivariate imputation
+test_impute <- mice(base_impute, m = 1, seed = 123)
+
+complete_set <- complete(test_impute,1)
+
+summary(lm(data = baseset, formula = rent_full ~.))
+
+summary(lm(data = complete_set, formula = rent_full ~.))
+
+
+summary(complete_set)
+
+complete_set %>% mutate_at(c("KTKZ", "quarter_general"), as.factor) %>% 
+  mutate_at(c("balcony","cabletv","elevator",
+              "parking_indoor","parking_outside"), as.logical) ->complete_set #Re-mutating them as Factors, because now they work with trees.
+
+
+```
+
+
+```{r Train and Test split, echo=FALSE}
+set.seed(4900)
+
+
+
+#Splitting up X and Y variables
+
+X_t <- training_reduced_large
+
+
+
+#Normalizing data
+#processed <- preProcess(X, method = c("center", "scale"))
+#X <- predict(processed, X)
+
+
+index <- createDataPartition(X_t$rent_full, p=0.75, list=FALSE)
+
+X_t_train <- X_t[index,1:27]
+X_t_test <- X_t[-index,2:27 ]
+Y_t_test<-X_t[-index,1]
+
+```
+
+```{r Single tree}
+
+
+fit_tree <- rpart(rent_full ~ . ,
+                  method = "anova",
+                  data = X_t_train)
+
+plot(fit_tree)
+text(fit_tree)
+
+rsq.rpart(fit_tree) #Increase of R2 per split vs decrease relative error per split
+
+plotcp(fit_tree) #Complexity Parameter of the Tree. The model goes with 6 splits as the optimum.
+
+```
+Let's look if we can prune the tree in order to get a better estimation:
+
+```{r Pruned tree}
+pruned_tree <- prune(fit_tree, cp = fit_tree$cptable[which.min(fit_tree$cptable[, "xerror"]), "CP"])
+
+par(mfrow = c(1, 2)) # Two Plots
+
+plot(fit_tree, uniform = TRUE, margin = 0.1, main = "Original Tree")
+text(fit_tree, use.n = TRUE, all = TRUE, cex = 0.8)
+plot(pruned_tree, uniform = TRUE, margin = 0.1, main = "Pruned Tree")
+text(pruned_tree, use.n = TRUE, all = TRUE, cex = 0.8)
+
+```
+
+No, the base model already produced the optimal tree. Let's make a prediction!
+
+```{r}
+
+
+predictions_tree <- predict(pruned_tree, X_t_test)
+output <- data.frame(Y_t_test$rent_full, predictions_tree)
+
+RMSE(output$Y_t_test.rent_full,output$predictions_tree)
+
+```
+
+We've got even worse predictions than with our Lasso-Regression!
+
+Let's try it again, but with our imputed dataset:
+
+```{r}
+X_t_i <- complete_set
+
+set.seed(123)
+
+#Normalizing data
+#processed <- preProcess(X, method = c("center", "scale"))
+#X <- predict(processed, X)
+
+
+index <- createDataPartition(X_t_i$rent_full, p=0.75, list=FALSE)
+
+X_t_train_i <- X_t_i[index,1:27]
+X_t_test_i <- X_t_i[-index,2:27 ]
+Y_t_test_i <-X_t_i[-index,1]
+
+
+fit_tree_i <- rpart(rent_full ~ . ,
+                  method = "anova",
+                  data = X_t_train_i)
+
+plot(fit_tree_i)
+text(fit_tree_i)
+
+pruned_tree_i <- prune(fit_tree_i, cp = fit_tree_i$cptable[which.min(fit_tree_i$cptable[, "xerror"]), "CP"])
+
+par(mfrow = c(1, 2)) # Two Plots
+
+plot(fit_tree_i, uniform = TRUE, margin = 0.1, main = "Original Tree")
+text(fit_tree_i, use.n = TRUE, all = TRUE, cex = 0.8)
+plot(pruned_tree_i, uniform = TRUE, margin = 0.1, main = "Pruned Tree")
+text(pruned_tree_i, use.n = TRUE, all = TRUE, cex = 0.8)
+
+predictions_tree_i <- predict(pruned_tree_i, X_t_test_i)
+output_i <- data.frame(Y_t_test_i, predictions_tree_i)
+
+RMSE(output_i$Y_t_test_i,output_i$predictions_tree_i)
+
+
+```
+
+Slightly better, but still not overwhelming.
+
+Trees that are based on information Gain (the standard Trees I've used so far) don't do the trick. I'll swap to **Conditional Inference Trees**,
+
+```{r Ctrees}
+library(party)
+
+fit_ctree <- ctree(formula = rent_full ~ ., data = X_t_train_i)
+
+prediction_ctree <- predict(fit_ctree, X_t_test_i)
+
+output_ctree <- data.frame(prediction_ctree, Y_t_test_i)
+
+RMSE(output_ctree$rent_full,output_ctree$Y_t_test_i)
+
+
+```
+
+The conditional trees work as follows:
+
+*"ctree, according to its authors (see chl's comments) avoids the following variable selection bias of rpart (and related methods): They tend to select variables that have many possible splits or many missing values. Unlike the others, ctree uses a significance test procedure in order to select variables instead of selecting the variable that maximizes an information measure (e.g. Gini coefficient)."*
+
+As we can see, they are better at predicting the housing prices than all of my other models.
+
+## Random forest
+
+ctrees worked pretty good, but I still want to try random forests.
+
+Let's look at the data:
+
+```{r Random Forest, echo=TRUE}
+library(randomForest)
+set.seed(4900)
+
+fit_randomf <- randomForest(x=X_t_train_i[,2:27], y = X_t_train_i[,1], ntree = 50)
+
+prediction_randomf <- predict(fit_randomf, X_t_test_i)
+
+output_randomf <- data.frame(prediction_randomf, Y_t_test_i)
+
+RMSE(output_randomf$prediction_randomf,output_randomf$Y_t_test_i)
+
+ggplot(output_randomf, aes(prediction_randomf,Y_t_test_i)) +
+  geom_point() +
+  labs(title = "Random Forest with 50 iterations",
+       subtitle = "Based on imputed dataset") +
+  xlab("Predictions") +
+  ylab("Actual values")
+
+```
+
